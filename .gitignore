@@ -1,0 +1,17 @@
+# Configuración local y credenciales
+.env
+.env.*
+!.env.example
+config.local.php
+
+# Dependencias y archivos generados
+vendor/
+node_modules/
+tmp/
+*.log
+*.sql.gz
+*.bak
+
+# Configuración del editor
+.idea/
+.vscode/

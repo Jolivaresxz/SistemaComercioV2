@@ -1,6 +1,6 @@
 <?php
 
-namespace SistemaComercio\Clientes;
+namespace SistemaComercio\Clientes\Entidad\Cliente;
 
 use InvalidArgumentException;
 
@@ -70,15 +70,11 @@ class Cliente
         $email = trim($email);
 
         if ($rut === '') {
-            throw new InvalidArgumentException(
-                'El RUT es obligatorio.'
-            );
+            throw new InvalidArgumentException('El RUT es obligatorio.');
         }
 
         if ($nombre === '') {
-            throw new InvalidArgumentException(
-                'El nombre es obligatorio.'
-            );
+            throw new InvalidArgumentException('El nombre es obligatorio.');
         }
 
         if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {

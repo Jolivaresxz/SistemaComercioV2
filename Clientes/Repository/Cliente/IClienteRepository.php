@@ -1,6 +1,8 @@
 <?php
 
-namespace SistemaComercio\Clientes;
+namespace SistemaComercio\Clientes\Repository\Cliente;
+
+use SistemaComercio\Clientes\Entidad\Cliente\Cliente;
 
 interface IClienteRepository
 {
@@ -8,8 +10,6 @@ interface IClienteRepository
     public function actualizar(Cliente $cliente): void;
     public function obtenerPorId(int $id): ?Cliente;
     public function obtenerPorRut(string $rut): ?Cliente;
-
-    /* Devuelve el objeto cliente */
     public function obtenerTodos(): array;
     public function eliminar(int $id): bool;
 }
