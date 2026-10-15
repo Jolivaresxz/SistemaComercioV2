@@ -1,6 +1,8 @@
 Options -MultiViews
 RewriteEngine On
 
+RewriteRule ^registry/(register|heartbeat|unregister|discover|instances)/?$ registry.php?action=$1 [L,QSA]
+
 RewriteRule ^obtenertodoslosclientes/?$ SistemaComercio/respuestas/Cliente/obtenerTodosLosClientes.php [L,QSA]
 RewriteRule ^obtenerclienteporid/([0-9]+)/?$ SistemaComercio/respuestas/Cliente/obtenerClientePorId.php?id=$1 [L,QSA]
 RewriteRule ^obtenerclienteporrut/([^/]+)/?$ SistemaComercio/respuestas/Cliente/obtenerClientePorRut.php?rut=$1 [L,QSA]
