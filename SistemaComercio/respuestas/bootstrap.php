@@ -192,5 +192,13 @@ function manejarError(Throwable $error): void
 
 set_exception_handler('manejarError');
 
+if (strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'GET') {
+    header('Allow: GET');
+    responderJson(
+        ['exito' => false, 'mensaje' => 'Esta demostración solo permite consultas GET.'],
+        405
+    );
+}
+
 $conexion = require $raizProyecto
     . '/SistemaComercio/Configuracion/db_connect.php';
