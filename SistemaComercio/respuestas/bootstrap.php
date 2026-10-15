@@ -176,5 +176,17 @@ if (strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'GET') {
     );
 }
 
+$gatewayToken = trim((string) getenv('BACKEND_GATEWAY_TOKEN'));
+
+if (
+    $gatewayToken !== ''
+    && !hash_equals(
+        $gatewayToken,
+        (string) ($_SERVER['HTTP_X_GATEWAY_TOKEN'] ?? '')
+    )
+) {
+    responderJson(['exito' => false, 'mensaje' => 'Acceso directo no permitido.'], 403);
+}
+
 $conexion = require $raizProyecto
     . '/SistemaComercio/Configuracion/db_connect.php';
