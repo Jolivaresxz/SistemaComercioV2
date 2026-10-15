@@ -4,6 +4,9 @@ require_once dirname(__DIR__) . '/Support/autoload.php';
 
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 
+// Este archivo se ejecuta EN EL PC elegido por el Gateway. El autoload carga
+// config.local.php de ese PC, por lo que DB_* apunta a su propia base local.
+// El Gateway no cambia este archivo ni necesita credenciales MySQL remotas.
 $servername = getenv('DB_HOST') ?: 'localhost';
 $username = getenv('DB_USER') ?: 'root';
 $password = getenv('DB_PASSWORD') ?: '';

@@ -22,7 +22,7 @@ if (getenv('GATEWAY_ENABLED') !== '1') {
 }
 
 try {
-    $store = new RegistryStore(trim((string) getenv('REGISTRY_DB_PATH')));
+    $store = new RegistryStore(trim((string) getenv('REGISTRY_FILE_PATH')));
     $action = (string) ($_GET['action'] ?? '');
     $method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
 

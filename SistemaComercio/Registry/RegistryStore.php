@@ -4,99 +4,48 @@ declare(strict_types=1);
 
 namespace SistemaComercio\Registry;
 
-use PDO;
 use RuntimeException;
 use SistemaComercio\Gateway\Balancer\StrategyFactory;
-use Throwable;
 
+/**
+ * El Registry completo vive en un archivo JSON. flock evita que dos peticiones
+ * modifiquen el archivo a la vez durante esta práctica de aula.
+ */
 class RegistryStore
 {
-    private PDO $db;
-
-    public function __construct(string $path)
+    public function __construct(private string $path)
     {
         if ($path === '' || !is_dir(dirname($path))) {
-            throw new RuntimeException('Configure REGISTRY_DB_PATH en un directorio existente.');
+            throw new RuntimeException('Configure REGISTRY_FILE_PATH en una carpeta existente.');
         }
 
-        $this->db = new PDO('sqlite:' . $path);
-        $this->db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-        $this->db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-        $this->db->exec('PRAGMA busy_timeout = 5000');
-        $this->db->exec('PRAGMA journal_mode = WAL');
-        $this->db->exec(
-            'CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            )'
-        );
-        $this->db->exec(
-            'CREATE TABLE IF NOT EXISTS instances (
-                instance_id TEXT PRIMARY KEY,
-                service_name TEXT NOT NULL,
-                base_url TEXT NOT NULL,
-                dataset_hash TEXT NOT NULL,
-                status TEXT NOT NULL,
-                last_seen_at INTEGER NOT NULL,
-                active_requests INTEGER NOT NULL DEFAULT 0,
-                created_at INTEGER NOT NULL
-            )'
-        );
-        $this->db->exec(
-            'CREATE TABLE IF NOT EXISTS requests (
-                request_id TEXT PRIMARY KEY,
-                client_ip TEXT NOT NULL,
-                route TEXT NOT NULL,
-                algorithm TEXT NOT NULL,
-                instance_id TEXT NOT NULL,
-                status TEXT NOT NULL,
-                started_at INTEGER NOT NULL,
-                finished_at INTEGER,
-                duration_ms INTEGER,
-                http_status INTEGER,
-                error_message TEXT
-            )'
-        );
+        // Crea el JSON la primera vez y detecta un archivo antiguo o dañado.
+        $this->access(static fn (array &$data): null => null, true);
     }
 
     public function register(string $instanceId, string $baseUrl, string $datasetHash): array
     {
-        $this->db->exec('BEGIN IMMEDIATE');
-
-        try {
-            $expected = $this->expectedHash();
+        return $this->access(function (array &$data) use ($instanceId, $baseUrl, $datasetHash): array {
+            $expected = $this->expectedFrom($data);
 
             if ($expected === null) {
                 $expected = $datasetHash;
-                $statement = $this->db->prepare(
-                    'INSERT INTO settings (key, value) VALUES (?, ?)'
-                );
-                $statement->execute(['dataset_hash', $expected]);
+                $data['expectedDatasetHash'] = $datasetHash;
             }
 
+            $previous = $data['instances'][$instanceId] ?? null;
             $status = hash_equals($expected, $datasetHash) ? 'UP' : 'MISMATCH';
             $now = time();
-            $statement = $this->db->prepare(
-                'INSERT INTO instances (
-                    instance_id, service_name, base_url, dataset_hash,
-                    status, last_seen_at, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(instance_id) DO UPDATE SET
-                    base_url = excluded.base_url,
-                    dataset_hash = excluded.dataset_hash,
-                    status = excluded.status,
-                    last_seen_at = excluded.last_seen_at'
-            );
-            $statement->execute([
-                $instanceId,
-                'sistema-comercio',
-                $baseUrl,
-                $datasetHash,
-                $status,
-                $now,
-                $now,
-            ]);
-            $this->db->exec('COMMIT');
+            $data['instances'][$instanceId] = [
+                'instance_id' => $instanceId,
+                'service_name' => 'sistema-comercio',
+                'base_url' => $baseUrl,
+                'dataset_hash' => $datasetHash,
+                'status' => $status,
+                'last_seen_at' => $now,
+                'active_requests' => (int) ($previous['active_requests'] ?? 0),
+                'created_at' => (int) ($previous['created_at'] ?? $now),
+            ];
 
             return [
                 'instanceId' => $instanceId,
@@ -104,29 +53,26 @@ class RegistryStore
                 'datasetHash' => $datasetHash,
                 'expectedDatasetHash' => $expected,
             ];
-        } catch (Throwable $error) {
-            $this->db->exec('ROLLBACK');
-            throw $error;
-        }
+        }, true);
     }
 
     public function getInstance(string $instanceId): ?array
     {
-        $statement = $this->db->prepare('SELECT * FROM instances WHERE instance_id = ?');
-        $statement->execute([$instanceId]);
-        $instance = $statement->fetch();
-
-        return $instance === false ? null : $instance;
+        return $this->access(
+            static fn (array &$data): ?array => $data['instances'][$instanceId] ?? null
+        );
     }
 
     public function unregister(string $instanceId): bool
     {
-        $statement = $this->db->prepare(
-            "UPDATE instances SET status = 'DOWN' WHERE instance_id = ?"
-        );
-        $statement->execute([$instanceId]);
+        return $this->access(static function (array &$data) use ($instanceId): bool {
+            if (!isset($data['instances'][$instanceId])) {
+                return false;
+            }
 
-        return $statement->rowCount() > 0;
+            $data['instances'][$instanceId]['status'] = 'DOWN';
+            return true;
+        }, true);
     }
 
     public function markDown(string $instanceId): void
@@ -136,36 +82,55 @@ class RegistryStore
 
     public function discover(int $maxAgeSeconds = 45): array
     {
-        $statement = $this->db->prepare(
-            "SELECT instance_id, service_name, base_url, dataset_hash,
-                    active_requests, last_seen_at
-             FROM instances
-             WHERE status = 'UP' AND last_seen_at >= ?
-             ORDER BY instance_id"
-        );
-        $statement->execute([time() - $maxAgeSeconds]);
+        return $this->access(static function (array &$data) use ($maxAgeSeconds): array {
+            $minimum = time() - $maxAgeSeconds;
+            $instances = array_values(array_filter(
+                $data['instances'],
+                static fn (array $instance): bool =>
+                    $instance['status'] === 'UP'
+                    && (int) $instance['last_seen_at'] >= $minimum
+            ));
+            usort($instances, static fn (array $a, array $b): int =>
+                strcmp($a['instance_id'], $b['instance_id']));
 
-        return $statement->fetchAll();
+            return array_map(static fn (array $instance): array => [
+                'instance_id' => $instance['instance_id'],
+                'service_name' => $instance['service_name'],
+                'base_url' => $instance['base_url'],
+                'dataset_hash' => $instance['dataset_hash'],
+                'active_requests' => $instance['active_requests'],
+                'last_seen_at' => $instance['last_seen_at'],
+            ], $instances);
+        });
     }
 
     public function listInstances(int $maxAgeSeconds = 45): array
     {
-        $instances = $this->db->query(
-            'SELECT instance_id, service_name, base_url, dataset_hash,
-                    status, active_requests, last_seen_at
-             FROM instances ORDER BY instance_id'
-        )->fetchAll();
+        return $this->access(static function (array &$data) use ($maxAgeSeconds): array {
+            $instances = array_values($data['instances']);
+            usort($instances, static fn (array $a, array $b): int =>
+                strcmp($a['instance_id'], $b['instance_id']));
 
-        foreach ($instances as &$instance) {
-            if (
-                $instance['status'] === 'UP'
-                && (int) $instance['last_seen_at'] < time() - $maxAgeSeconds
-            ) {
-                $instance['status'] = 'STALE';
+            foreach ($instances as &$instance) {
+                if (
+                    $instance['status'] === 'UP'
+                    && (int) $instance['last_seen_at'] < time() - $maxAgeSeconds
+                ) {
+                    $instance['status'] = 'STALE';
+                }
             }
-        }
+            unset($instance);
 
-        return $instances;
+            return array_map(static fn (array $instance): array => [
+                'instance_id' => $instance['instance_id'],
+                'service_name' => $instance['service_name'],
+                'base_url' => $instance['base_url'],
+                'dataset_hash' => $instance['dataset_hash'],
+                'status' => $instance['status'],
+                'active_requests' => $instance['active_requests'],
+                'last_seen_at' => $instance['last_seen_at'],
+            ], $instances);
+        });
     }
 
     public function reserve(
@@ -176,75 +141,72 @@ class RegistryStore
         string $hashKey,
         array $excludedIds = []
     ): ?array {
-        $this->db->exec('BEGIN IMMEDIATE');
-
-        try {
+        return $this->access(static function (array &$data) use (
+            $attemptId, $clientIp, $route, $algorithm, $hashKey, $excludedIds
+        ): ?array {
             $now = time();
-            $stale = $this->db->prepare(
-                "UPDATE requests
-                 SET status = 'TIMEOUT', finished_at = ?,
-                     error_message = 'La petición no finalizó a tiempo.'
-                 WHERE status = 'ACTIVE' AND started_at < ?"
-            );
-            $stale->execute([$now, $now - 30]);
-            $this->db->exec(
-                "UPDATE instances SET active_requests = (
-                    SELECT COUNT(*) FROM requests
-                    WHERE requests.instance_id = instances.instance_id
-                      AND requests.status = 'ACTIVE'
-                )"
-            );
 
-            $statement = $this->db->prepare(
-                "SELECT instance_id, service_name, base_url, dataset_hash,
-                        active_requests, last_seen_at
-                 FROM instances
-                 WHERE status = 'UP' AND last_seen_at >= ?"
-            );
-            $statement->execute([$now - 45]);
-            $instances = array_values(array_filter(
-                $statement->fetchAll(),
+            foreach ($data['requests'] as &$request) {
+                if ($request['status'] === 'ACTIVE' && $request['started_at'] < $now - 30) {
+                    $request['status'] = 'TIMEOUT';
+                    $request['finished_at'] = $now;
+                    $request['error_message'] = 'La petición no finalizó a tiempo.';
+                }
+            }
+            unset($request);
+
+            foreach ($data['instances'] as &$instance) {
+                $instance['active_requests'] = 0;
+            }
+            unset($instance);
+
+            foreach ($data['requests'] as $request) {
+                if (
+                    $request['status'] === 'ACTIVE'
+                    && isset($data['instances'][$request['instance_id']])
+                ) {
+                    $data['instances'][$request['instance_id']]['active_requests']++;
+                }
+            }
+
+            $candidates = array_values(array_filter(
+                $data['instances'],
                 static fn (array $instance): bool =>
-                    !in_array($instance['instance_id'], $excludedIds, true)
+                    $instance['status'] === 'UP'
+                    && $instance['last_seen_at'] >= $now - 45
+                    && !in_array($instance['instance_id'], $excludedIds, true)
             ));
 
-            if ($instances === []) {
-                $this->db->exec('COMMIT');
+            if ($candidates === []) {
                 return null;
             }
 
+            if (isset($data['requests'][$attemptId])) {
+                throw new RuntimeException('La petición ya está registrada.');
+            }
+
             $selected = StrategyFactory::make($algorithm)->select(
-                $instances,
-                $clientIp,
-                $hashKey
+                $candidates, $clientIp, $hashKey
             );
-            $increase = $this->db->prepare(
-                'UPDATE instances SET active_requests = active_requests + 1
-                 WHERE instance_id = ?'
-            );
-            $increase->execute([$selected['instance_id']]);
-            $insert = $this->db->prepare(
-                "INSERT INTO requests (
-                    request_id, client_ip, route, algorithm, instance_id,
-                    status, started_at
-                ) VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?)"
-            );
-            $insert->execute([
-                $attemptId,
-                $clientIp,
-                $route,
-                $algorithm,
-                $selected['instance_id'],
-                $now,
-            ]);
-            $this->db->exec('COMMIT');
-            $selected['active_requests'] = (int) $selected['active_requests'] + 1;
+            $id = $selected['instance_id'];
+            $data['instances'][$id]['active_requests']++;
+            $data['requests'][$attemptId] = [
+                'request_id' => $attemptId,
+                'client_ip' => $clientIp,
+                'route' => $route,
+                'algorithm' => $algorithm,
+                'instance_id' => $id,
+                'status' => 'ACTIVE',
+                'started_at' => $now,
+                'finished_at' => null,
+                'duration_ms' => null,
+                'http_status' => null,
+                'error_message' => null,
+            ];
+            $selected['active_requests'] = $data['instances'][$id]['active_requests'];
 
             return $selected;
-        } catch (Throwable $error) {
-            $this->db->exec('ROLLBACK');
-            throw $error;
-        }
+        }, true);
     }
 
     public function finish(
@@ -258,62 +220,65 @@ class RegistryStore
             throw new RuntimeException('Estado de petición inválido.');
         }
 
-        $this->db->exec('BEGIN IMMEDIATE');
-
-        try {
-            $find = $this->db->prepare(
-                'SELECT instance_id, status FROM requests WHERE request_id = ?'
-            );
-            $find->execute([$attemptId]);
-            $request = $find->fetch();
-
-            if ($request === false || $request['status'] !== 'ACTIVE') {
-                $this->db->exec('COMMIT');
-                return;
+        $this->access(static function (array &$data) use (
+            $attemptId, $status, $httpStatus, $durationMs, $errorMessage
+        ): null {
+            if (
+                !isset($data['requests'][$attemptId])
+                || $data['requests'][$attemptId]['status'] !== 'ACTIVE'
+            ) {
+                return null;
             }
 
-            $update = $this->db->prepare(
-                'UPDATE requests
-                 SET status = ?, finished_at = ?, duration_ms = ?,
-                     http_status = ?, error_message = ?
-                 WHERE request_id = ?'
-            );
-            $update->execute([
-                $status,
-                time(),
-                $durationMs,
-                $httpStatus,
-                $errorMessage,
-                $attemptId,
-            ]);
-            $decrease = $this->db->prepare(
-                'UPDATE instances
-                 SET active_requests = MAX(active_requests - 1, 0)
-                 WHERE instance_id = ?'
-            );
-            $decrease->execute([$request['instance_id']]);
-            $this->db->exec('COMMIT');
-        } catch (Throwable $error) {
-            $this->db->exec('ROLLBACK');
-            throw $error;
-        }
+            $request = &$data['requests'][$attemptId];
+            $request['status'] = $status;
+            $request['finished_at'] = time();
+            $request['duration_ms'] = $durationMs;
+            $request['http_status'] = $httpStatus;
+            $request['error_message'] = $errorMessage;
+            $id = $request['instance_id'];
+            unset($request);
+
+            if (isset($data['instances'][$id])) {
+                $data['instances'][$id]['active_requests'] = max(
+                    0, $data['instances'][$id]['active_requests'] - 1
+                );
+            }
+
+            // La práctica solo necesita historial reciente; evita un JSON enorme.
+            if (count($data['requests']) > 250) {
+                $finished = array_filter($data['requests'], static fn (array $item): bool =>
+                    $item['status'] !== 'ACTIVE');
+                uasort($finished, static fn (array $a, array $b): int =>
+                    ($b['started_at'] <=> $a['started_at'])
+                    ?: strcmp($b['request_id'], $a['request_id']));
+                foreach (array_slice(array_keys($finished), 200) as $oldId) {
+                    unset($data['requests'][$oldId]);
+                }
+            }
+
+            return null;
+        }, true);
     }
 
     public function recentRequests(int $limit = 50): array
     {
-        $statement = $this->db->prepare(
-            'SELECT request_id, client_ip, route, algorithm, instance_id,
-                    status, started_at, finished_at, duration_ms,
-                    http_status, error_message
-             FROM requests ORDER BY started_at DESC, request_id DESC LIMIT ?'
-        );
-        $statement->bindValue(1, max(1, min($limit, 200)), PDO::PARAM_INT);
-        $statement->execute();
+        return $this->access(static function (array &$data) use ($limit): array {
+            $requests = array_values($data['requests']);
+            usort($requests, static fn (array $a, array $b): int =>
+                ($b['started_at'] <=> $a['started_at'])
+                ?: strcmp($b['request_id'], $a['request_id']));
 
-        return $statement->fetchAll();
+            return array_slice($requests, 0, max(1, min($limit, 200)));
+        });
     }
 
     public function expectedHash(): ?string
+    {
+        return $this->access(fn (array &$data): ?string => $this->expectedFrom($data));
+    }
+
+    private function expectedFrom(array $data): ?string
     {
         $configured = trim((string) getenv('EXPECTED_DATASET_HASH'));
 
@@ -325,12 +290,76 @@ class RegistryStore
             return $configured;
         }
 
-        $statement = $this->db->prepare(
-            'SELECT value FROM settings WHERE key = ?'
-        );
-        $statement->execute(['dataset_hash']);
-        $value = $statement->fetchColumn();
+        return $data['expectedDatasetHash'];
+    }
 
-        return $value === false ? null : (string) $value;
+    private function access(callable $action, bool $write = false): mixed
+    {
+        $file = @fopen($this->path, 'c+');
+
+        if ($file === false) {
+            throw new RuntimeException('No se pudo abrir el archivo JSON del Registry.');
+        }
+
+        try {
+            if (!flock($file, LOCK_EX)) {
+                throw new RuntimeException('No se pudo bloquear el archivo del Registry.');
+            }
+
+            rewind($file);
+            $text = stream_get_contents($file);
+
+            if ($text === false) {
+                throw new RuntimeException('No se pudo leer el archivo del Registry.');
+            }
+
+            $data = trim($text) === ''
+                ? ['expectedDatasetHash' => null, 'instances' => [], 'requests' => []]
+                : json_decode($text, true, 512, JSON_THROW_ON_ERROR);
+
+            if (
+                !is_array($data)
+                || !array_key_exists('expectedDatasetHash', $data)
+                || !is_array($data['instances'] ?? null)
+                || !is_array($data['requests'] ?? null)
+            ) {
+                throw new RuntimeException('El archivo del Registry no tiene un formato válido.');
+            }
+
+            $result = $action($data);
+
+            if ($write) {
+                $json = json_encode(
+                    $data,
+                    JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE
+                    | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE
+                    | JSON_THROW_ON_ERROR
+                ) . "\n";
+                rewind($file);
+
+                if (!ftruncate($file, 0)) {
+                    throw new RuntimeException('No se pudo actualizar el Registry.');
+                }
+
+                $offset = 0;
+
+                while ($offset < strlen($json)) {
+                    $written = fwrite($file, substr($json, $offset));
+
+                    if ($written === false || $written === 0) {
+                        throw new RuntimeException('No se pudo guardar el Registry.');
+                    }
+
+                    $offset += $written;
+                }
+
+                fflush($file);
+            }
+
+            return $result;
+        } finally {
+            flock($file, LOCK_UN);
+            fclose($file);
+        }
     }
 }

@@ -7,7 +7,7 @@ use SistemaComercio\Registry\RegistryStore;
 require_once dirname(__DIR__) . '/SistemaComercio/Support/autoload.php';
 
 putenv('EXPECTED_DATASET_HASH');
-$path = sys_get_temp_dir() . '/registry-test-' . bin2hex(random_bytes(8)) . '.sqlite';
+$path = sys_get_temp_dir() . '/registry-test-' . bin2hex(random_bytes(8)) . '.json';
 
 try {
     $store = new RegistryStore($path);
@@ -20,6 +20,15 @@ try {
 
     if ($first['status'] !== 'UP' || $different['status'] !== 'MISMATCH') {
         throw new RuntimeException('El Registry no clasificó las copias de datos.');
+    }
+
+    $saved = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
+
+    if (
+        $saved['expectedDatasetHash'] !== $sameHash
+        || $saved['instances']['pc-a']['base_url'] !== 'http://127.0.0.1:8001'
+    ) {
+        throw new RuntimeException('El archivo JSON no guardó las instancias.');
     }
 
     if (count($store->discover()) !== 2) {
@@ -56,20 +65,32 @@ try {
         throw new RuntimeException('Discovery incluyó una instancia caída.');
     }
 
-    $db = new PDO('sqlite:' . $path);
-    $db->exec("UPDATE instances SET last_seen_at = 1 WHERE instance_id = 'pc-a'");
+    $file = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
+    $file['instances']['pc-a']['last_seen_at'] = 1;
+    file_put_contents($path, json_encode($file, JSON_THROW_ON_ERROR));
 
     if ($store->discover() !== []) {
         throw new RuntimeException('Discovery incluyó una instancia vencida.');
     }
 
+    file_put_contents($path, '{JSON incompleto');
+
+    try {
+        new RegistryStore($path);
+        throw new RuntimeException('El Registry aceptó un JSON inválido.');
+    } catch (JsonException $expectedError) {
+        // Un archivo inválido no se debe reemplazar silenciosamente.
+    }
+
+    if (file_get_contents($path) !== '{JSON incompleto') {
+        throw new RuntimeException('El Registry sobrescribió un archivo inválido.');
+    }
+
     echo "REGISTRY_TEST_OK\n";
 } finally {
-    unset($store, $db);
+    unset($store);
 
-    foreach ([$path, $path . '-wal', $path . '-shm'] as $file) {
-        if (is_file($file)) {
-            unlink($file);
-        }
+    if (is_file($path)) {
+        unlink($path);
     }
 }

@@ -119,7 +119,7 @@ try {
             throw new RuntimeException('No se pudo crear la carpeta de datos del Gateway.');
         }
 
-        $rutaRegistryDb = $carpetaDatos . '/registry.sqlite';
+        $rutaRegistryFile = $carpetaDatos . '/registry.json';
     } else {
         if (
             !empty($anterior['REGISTRY_TOKEN'])
@@ -132,7 +132,7 @@ try {
             $tokenRegistry = tokenCompartido('Token del Registry');
             $tokenBackend = tokenCompartido('Token del Backend');
         }
-        $rutaRegistryDb = '';
+        $rutaRegistryFile = '';
     }
 
     $basePropia = 'http://' . $ipPropia . $rutaWeb;
@@ -144,7 +144,7 @@ try {
         'REGISTRY_URL' => $baseGateway . '/registry',
         'REGISTRY_TOKEN' => $tokenRegistry,
         'BACKEND_GATEWAY_TOKEN' => $tokenBackend,
-        'REGISTRY_DB_PATH' => $rutaRegistryDb,
+        'REGISTRY_FILE_PATH' => $rutaRegistryFile,
         'LOAD_BALANCER' => 'random',
         'DB_HOST' => 'localhost',
         'DB_PORT' => '3306',
@@ -165,6 +165,7 @@ try {
         echo "\nComparte estos DOS tokens solo con tus compañeros:\n";
         echo "Token Registry: {$tokenRegistry}\n";
         echo "Token Backend: {$tokenBackend}\n";
+        echo "Registry (archivo de texto): {$rutaRegistryFile}\n";
     }
 
     echo "\n1. Comprueba: {$basePropia}/health.php\n";

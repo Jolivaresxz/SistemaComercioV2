@@ -49,7 +49,7 @@ try {
 header('X-Algorithm: ' . $algorithm);
 
 try {
-    $store = new RegistryStore(trim((string) getenv('REGISTRY_DB_PATH')));
+    $store = new RegistryStore(trim((string) getenv('REGISTRY_FILE_PATH')));
 
     if ($store->discover() === []) {
         gatewayResponse(['error' => 'No hay instancias disponibles.'], 503);
