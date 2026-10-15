@@ -7,6 +7,8 @@ if (PHP_SAPI !== 'cli') {
     exit;
 }
 
+require_once dirname(__DIR__) . '/SistemaComercio/Support/autoload.php';
+
 $action = $argv[1] ?? '';
 
 if (!in_array($action, ['register', 'heartbeat', 'unregister', 'watch'], true)) {

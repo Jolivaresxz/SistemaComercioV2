@@ -1,5 +1,7 @@
 <?php
 
+require_once dirname(__DIR__) . '/Support/autoload.php';
+
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 
 $servername = getenv('DB_HOST') ?: 'localhost';

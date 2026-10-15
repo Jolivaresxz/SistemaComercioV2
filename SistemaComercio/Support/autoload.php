@@ -28,3 +28,5 @@ if (is_file($autoloadComposer)) {
         }
     );
 }
+
+\SistemaComercio\Support\LocalConfig::apply($raizProyecto . '/config.local.php');

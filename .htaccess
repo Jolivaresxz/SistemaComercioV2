@@ -1,6 +1,10 @@
 Options -MultiViews
 RewriteEngine On
 
+<Files "config.local.php">
+    Require all denied
+</Files>
+
 RewriteRule ^registry/(register|heartbeat|unregister|discover|instances|activity)/?$ registry.php?action=$1 [L,QSA]
 RewriteRule ^api(?:/(.*))?/?$ api.php?path=$1 [L,QSA]
 
