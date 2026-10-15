@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use SistemaComercio\Gateway\HttpProxy;
 use SistemaComercio\Gateway\RouteMap;
+use SistemaComercio\Gateway\Balancer\StrategyFactory;
 use SistemaComercio\Registry\RegistryStore;
 
 require_once __DIR__ . '/SistemaComercio/Support/autoload.php';
@@ -37,22 +38,48 @@ if ($route === null) {
 
 $requestId = bin2hex(random_bytes(8));
 header('X-Request-Id: ' . $requestId);
+$algorithm = trim((string) ($_GET['algorithm'] ?? getenv('LOAD_BALANCER') ?: 'random'));
+
+try {
+    StrategyFactory::make($algorithm);
+} catch (InvalidArgumentException $error) {
+    gatewayResponse(['error' => $error->getMessage()], 400);
+}
+
+header('X-Algorithm: ' . $algorithm);
 
 try {
     $store = new RegistryStore(trim((string) getenv('REGISTRY_DB_PATH')));
-    $instances = $store->discover();
 
-    if ($instances === []) {
+    if ($store->discover() === []) {
         gatewayResponse(['error' => 'No hay instancias disponibles.'], 503);
     }
 
-    shuffle($instances);
     $proxy = new HttpProxy();
     $lastError = null;
+    $excludedIds = [];
 
-    foreach ($instances as $instance) {
+    for ($attempt = 1; $attempt <= 16; $attempt++) {
+        $attemptId = $requestId . '-' . $attempt;
+        $instance = $store->reserve(
+            $attemptId,
+            $clientIp,
+            $route['route'],
+            $algorithm,
+            $route['hashKey'],
+            $excludedIds
+        );
+
+        if ($instance === null) {
+            break;
+        }
+
         $instanceId = $instance['instance_id'];
+        $excludedIds[] = $instanceId;
         $url = rtrim($instance['base_url'], '/') . $route['backendPath'];
+        $started = microtime(true);
+        $response = null;
+        $proxyError = null;
 
         try {
             $response = $proxy->get(
@@ -62,18 +89,30 @@ try {
             );
 
             if (in_array($response['status'], [502, 503, 504], true)) {
-                $store->markDown($instanceId);
-                continue;
+                throw new RuntimeException('La instancia devolvió HTTP ' . $response['status']);
             }
-
-            header('X-Selected-Instance: ' . $instanceId);
-            http_response_code($response['status']);
-            echo $response['body'];
-            exit;
         } catch (RuntimeException $error) {
+            $proxyError = $error;
             $lastError = $error;
-            $store->markDown($instanceId);
+        } finally {
+            $store->finish(
+                $attemptId,
+                $proxyError === null ? 'COMPLETED' : 'FAILED',
+                $response['status'] ?? 0,
+                (int) round((microtime(true) - $started) * 1000),
+                $proxyError?->getMessage()
+            );
         }
+
+        if ($proxyError !== null) {
+            $store->markDown($instanceId);
+            continue;
+        }
+
+        header('X-Selected-Instance: ' . $instanceId);
+        http_response_code($response['status']);
+        echo $response['body'];
+        exit;
     }
 
     error_log((string) $lastError);

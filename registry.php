@@ -26,9 +26,20 @@ try {
     $action = (string) ($_GET['action'] ?? '');
     $method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
 
-    if (in_array($action, ['discover', 'instances'], true)) {
+    if (in_array($action, ['discover', 'instances', 'activity'], true)) {
         if ($method !== 'GET') {
             registryResponse(['error' => 'Método no permitido.'], 405);
+        }
+
+        if ($action === 'activity') {
+            $token = trim((string) getenv('REGISTRY_TOKEN'));
+            $received = (string) ($_SERVER['HTTP_X_REGISTRY_TOKEN'] ?? '');
+
+            if ($token === '' || !hash_equals($token, $received)) {
+                registryResponse(['error' => 'Token de registro inválido.'], 401);
+            }
+
+            registryResponse(['requests' => $store->recentRequests()]);
         }
 
         if ($action === 'discover') {

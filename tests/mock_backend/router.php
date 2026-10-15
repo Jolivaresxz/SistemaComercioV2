@@ -37,5 +37,14 @@ if ($path === '/obtenertodoslosclientes') {
     return;
 }
 
+if (preg_match('~^/obtenerclienteporid/([1-9][0-9]*)$~', $path, $match)) {
+    echo json_encode([
+        'exito' => true,
+        'datos' => ['id' => (int) $match[1], 'nombre' => 'Cliente de prueba'],
+        'instanceId' => $instanceId,
+    ]);
+    return;
+}
+
 http_response_code(404);
 echo json_encode(['exito' => false, 'mensaje' => 'No existe la ruta.']);

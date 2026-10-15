@@ -6,6 +6,7 @@ namespace SistemaComercio\Registry;
 
 use PDO;
 use RuntimeException;
+use SistemaComercio\Gateway\Balancer\StrategyFactory;
 use Throwable;
 
 class RegistryStore
@@ -165,6 +166,151 @@ class RegistryStore
         }
 
         return $instances;
+    }
+
+    public function reserve(
+        string $attemptId,
+        string $clientIp,
+        string $route,
+        string $algorithm,
+        string $hashKey,
+        array $excludedIds = []
+    ): ?array {
+        $this->db->exec('BEGIN IMMEDIATE');
+
+        try {
+            $now = time();
+            $stale = $this->db->prepare(
+                "UPDATE requests
+                 SET status = 'TIMEOUT', finished_at = ?,
+                     error_message = 'La petición no finalizó a tiempo.'
+                 WHERE status = 'ACTIVE' AND started_at < ?"
+            );
+            $stale->execute([$now, $now - 30]);
+            $this->db->exec(
+                "UPDATE instances SET active_requests = (
+                    SELECT COUNT(*) FROM requests
+                    WHERE requests.instance_id = instances.instance_id
+                      AND requests.status = 'ACTIVE'
+                )"
+            );
+
+            $statement = $this->db->prepare(
+                "SELECT instance_id, service_name, base_url, dataset_hash,
+                        active_requests, last_seen_at
+                 FROM instances
+                 WHERE status = 'UP' AND last_seen_at >= ?"
+            );
+            $statement->execute([$now - 45]);
+            $instances = array_values(array_filter(
+                $statement->fetchAll(),
+                static fn (array $instance): bool =>
+                    !in_array($instance['instance_id'], $excludedIds, true)
+            ));
+
+            if ($instances === []) {
+                $this->db->exec('COMMIT');
+                return null;
+            }
+
+            $selected = StrategyFactory::make($algorithm)->select(
+                $instances,
+                $clientIp,
+                $hashKey
+            );
+            $increase = $this->db->prepare(
+                'UPDATE instances SET active_requests = active_requests + 1
+                 WHERE instance_id = ?'
+            );
+            $increase->execute([$selected['instance_id']]);
+            $insert = $this->db->prepare(
+                "INSERT INTO requests (
+                    request_id, client_ip, route, algorithm, instance_id,
+                    status, started_at
+                ) VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?)"
+            );
+            $insert->execute([
+                $attemptId,
+                $clientIp,
+                $route,
+                $algorithm,
+                $selected['instance_id'],
+                $now,
+            ]);
+            $this->db->exec('COMMIT');
+            $selected['active_requests'] = (int) $selected['active_requests'] + 1;
+
+            return $selected;
+        } catch (Throwable $error) {
+            $this->db->exec('ROLLBACK');
+            throw $error;
+        }
+    }
+
+    public function finish(
+        string $attemptId,
+        string $status,
+        int $httpStatus,
+        int $durationMs,
+        ?string $errorMessage = null
+    ): void {
+        if (!in_array($status, ['COMPLETED', 'FAILED'], true)) {
+            throw new RuntimeException('Estado de petición inválido.');
+        }
+
+        $this->db->exec('BEGIN IMMEDIATE');
+
+        try {
+            $find = $this->db->prepare(
+                'SELECT instance_id, status FROM requests WHERE request_id = ?'
+            );
+            $find->execute([$attemptId]);
+            $request = $find->fetch();
+
+            if ($request === false || $request['status'] !== 'ACTIVE') {
+                $this->db->exec('COMMIT');
+                return;
+            }
+
+            $update = $this->db->prepare(
+                'UPDATE requests
+                 SET status = ?, finished_at = ?, duration_ms = ?,
+                     http_status = ?, error_message = ?
+                 WHERE request_id = ?'
+            );
+            $update->execute([
+                $status,
+                time(),
+                $durationMs,
+                $httpStatus,
+                $errorMessage,
+                $attemptId,
+            ]);
+            $decrease = $this->db->prepare(
+                'UPDATE instances
+                 SET active_requests = MAX(active_requests - 1, 0)
+                 WHERE instance_id = ?'
+            );
+            $decrease->execute([$request['instance_id']]);
+            $this->db->exec('COMMIT');
+        } catch (Throwable $error) {
+            $this->db->exec('ROLLBACK');
+            throw $error;
+        }
+    }
+
+    public function recentRequests(int $limit = 50): array
+    {
+        $statement = $this->db->prepare(
+            'SELECT request_id, client_ip, route, algorithm, instance_id,
+                    status, started_at, finished_at, duration_ms,
+                    http_status, error_message
+             FROM requests ORDER BY started_at DESC, request_id DESC LIMIT ?'
+        );
+        $statement->bindValue(1, max(1, min($limit, 200)), PDO::PARAM_INT);
+        $statement->execute();
+
+        return $statement->fetchAll();
     }
 
     public function expectedHash(): ?string

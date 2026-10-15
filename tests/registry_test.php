@@ -26,6 +26,30 @@ try {
         throw new RuntimeException('Discovery debe devolver solo instancias compatibles.');
     }
 
+    $reservedA = $store->reserve(
+        'request-1', '192.168.1.10', 'clientes',
+        'least_connections', 'client:192.168.1.10'
+    );
+    $reservedB = $store->reserve(
+        'request-2', '192.168.1.11', 'clientes',
+        'least_connections', 'client:192.168.1.11'
+    );
+
+    if ($reservedA['instance_id'] !== 'pc-a' || $reservedB['instance_id'] !== 'pc-b') {
+        throw new RuntimeException('Least Connections no usó el contador activo.');
+    }
+
+    $store->finish('request-1', 'COMPLETED', 200, 15);
+    $store->finish('request-2', 'FAILED', 0, 20, 'Prueba de error.');
+
+    if (
+        (int) $store->getInstance('pc-a')['active_requests'] !== 0
+        || (int) $store->getInstance('pc-b')['active_requests'] !== 0
+        || count($store->recentRequests()) !== 2
+    ) {
+        throw new RuntimeException('Las peticiones activas no se liberaron.');
+    }
+
     $store->markDown('pc-b');
 
     if (count($store->discover()) !== 1) {

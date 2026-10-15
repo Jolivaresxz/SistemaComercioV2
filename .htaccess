@@ -1,7 +1,7 @@
 Options -MultiViews
 RewriteEngine On
 
-RewriteRule ^registry/(register|heartbeat|unregister|discover|instances)/?$ registry.php?action=$1 [L,QSA]
+RewriteRule ^registry/(register|heartbeat|unregister|discover|instances|activity)/?$ registry.php?action=$1 [L,QSA]
 RewriteRule ^api(?:/(.*))?/?$ api.php?path=$1 [L,QSA]
 
 RewriteRule ^obtenertodoslosclientes/?$ SistemaComercio/respuestas/Cliente/obtenerTodosLosClientes.php [L,QSA]
